@@ -25,6 +25,7 @@ namespace EdgeMonitor.ViewModels
         private string _windowTitle = "Edge Monitor";
         private bool _isMonitoring = false;
         private System.Windows.Threading.DispatcherTimer? _monitorTimer;
+        private bool _isCurrentlyMonitoring = false; // 防止重叠检查
         
         public MainViewModel(
             ILogger<MainViewModel> logger,
@@ -197,6 +198,13 @@ namespace EdgeMonitor.ViewModels
 
         private async void MonitorTimer_Tick(object? sender, EventArgs e)
         {
+            // 防止重叠检查
+            if (_isCurrentlyMonitoring)
+            {
+                _logger.LogWarning("上一次监控检查尚未完成，跳过本次检查");
+                return;
+            }
+
             _logger.LogInformation("定时器触发Edge监控检查");
             await PerformEdgeMonitoringAsync();
         }
@@ -318,7 +326,16 @@ namespace EdgeMonitor.ViewModels
 
         private async Task PerformEdgeMonitoringAsync()
         {
+            // 设置监控标志，防止重叠
+            if (_isCurrentlyMonitoring)
+            {
+                _logger.LogWarning("监控检查已在进行中，忽略重复调用");
+                return;
+            }
+
+            _isCurrentlyMonitoring = true;
             var startTime = DateTime.Now;
+            
             try
             {
                 _logger.LogInformation($"[{startTime:HH:mm:ss.fff}] 开始执行Edge监控检查");
@@ -434,6 +451,11 @@ namespace EdgeMonitor.ViewModels
                     LogData += errorMessage;
                     StatusMessage = "监控出现错误";
                 });
+            }
+            finally
+            {
+                // 重置监控标志
+                _isCurrentlyMonitoring = false;
             }
         }
 
