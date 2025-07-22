@@ -1,0 +1,17 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+packages/
+*.log
+*.tmp
+*.cache
+*.DotSettings
+.vscode/
+.idea/
+*.userprefs
+*.pidb
+*.userprefs
+*.DS_Store
+Thumbs.db
