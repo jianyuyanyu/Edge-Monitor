@@ -10,8 +10,8 @@
     <AssemblyDescription>Edge Monitor Application</AssemblyDescription>
     <AssemblyCompany>Your Company</AssemblyCompany>
     <AssemblyProduct>Edge Monitor</AssemblyProduct>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
     <ApplicationIcon>icon.ico</ApplicationIcon>
 
     <!-- 自包含发布配置（不使用单文件） -->
