@@ -57,19 +57,21 @@ namespace EdgeMonitor.Services
         {
             return await Task.Run(() =>
             {
+                var startTime = DateTime.Now;
                 var edgeProcesses = new List<EdgeProcessInfo>();
                 
-                // 获取所有Edge相关进程
-                var processNames = new[] { "msedge", "MicrosoftEdge", "MicrosoftEdgeCP", "MicrosoftEdgeSH" };
+                // 修改为只搜索现代Edge进程以提高性能
+                _logger.LogInformation("开始搜索Edge进程");
                 
-                _logger.LogInformation($"开始搜索Edge进程，进程名: {string.Join(", ", processNames)}");
+                var processes = Process.GetProcessesByName("msedge");
+                _logger.LogInformation($"找到 {processes.Length} 个 msedge 进程");
                 
-                foreach (var processName in processNames)
-                {
-                    var processes = Process.GetProcessesByName(processName);
-                    _logger.LogInformation($"找到 {processes.Length} 个 {processName} 进程");
-                    
-                    foreach (var process in processes)
+                // 获取所有Edge进程的窗口信息（一次性处理，避免重复枚举）
+                var processWindowCounts = GetAllProcessWindowCounts(processes.Select(p => p.Id).ToArray());
+                
+                // 并行处理进程信息以提高性能
+                var processInfos = processes.AsParallel().WithDegreeOfParallelism(Environment.ProcessorCount)
+                    .Select(process =>
                     {
                         try
                         {
@@ -79,37 +81,35 @@ namespace EdgeMonitor.Services
                                 ProcessName = process.ProcessName,
                                 MemoryUsageMB = process.WorkingSet64 / (1024 * 1024),
                                 StartTime = process.StartTime,
-                                WindowCount = GetWindowCountForProcess(process.Id)
+                                WindowCount = processWindowCounts.GetValueOrDefault(process.Id, 0),
+                                CommandLine = "已省略" // 移除耗时的命令行获取
                             };
 
                             // 计算CPU使用率
                             processInfo.CpuUsage = CalculateCpuUsage(process);
 
-                            // 获取命令行参数（如果可能）
-                            try
-                            {
-                                processInfo.CommandLine = GetCommandLine(process);
-                            }
-                            catch
-                            {
-                                processInfo.CommandLine = "无法获取";
-                            }
-
-                            edgeProcesses.Add(processInfo);
-                            _logger.LogDebug($"添加进程: PID={processInfo.ProcessId}, 内存={processInfo.MemoryUsageMB}MB, 窗口数={processInfo.WindowCount}");
+                            _logger.LogDebug($"处理进程: PID={processInfo.ProcessId}, 内存={processInfo.MemoryUsageMB}MB, 窗口数={processInfo.WindowCount}");
+                            return processInfo;
                         }
                         catch (Exception ex)
                         {
                             _logger.LogWarning($"无法获取进程 {process.ProcessName} (PID: {process.Id}) 的信息: {ex.Message}");
+                            return null;
                         }
                         finally
                         {
                             process.Dispose();
                         }
-                    }
-                }
+                    })
+                    .Where(info => info != null)
+                    .ToList();
 
-                _logger.LogInformation($"总共找到 {edgeProcesses.Count} 个Edge进程");
+                edgeProcesses.AddRange(processInfos!);
+                
+                var endTime = DateTime.Now;
+                var elapsed = (endTime - startTime).TotalMilliseconds;
+                _logger.LogInformation($"Edge进程扫描完成，耗时: {elapsed:F0}ms，找到 {edgeProcesses.Count} 个进程");
+                
                 return edgeProcesses.ToArray();
             });
         }
@@ -165,29 +165,26 @@ namespace EdgeMonitor.Services
         {
             await Task.Run(() =>
             {
-                var processNames = new[] { "msedge", "MicrosoftEdge", "MicrosoftEdgeCP", "MicrosoftEdgeSH" };
+                // 只终止现代Edge进程，提高性能
+                var processes = Process.GetProcessesByName("msedge");
                 int killedCount = 0;
 
-                foreach (var processName in processNames)
+                foreach (var process in processes)
                 {
-                    var processes = Process.GetProcessesByName(processName);
-                    foreach (var process in processes)
+                    try
                     {
-                        try
-                        {
-                            _logger.LogInformation($"正在终止 Edge 进程: {process.ProcessName} (PID: {process.Id})");
-                            process.Kill();
-                            process.WaitForExit(5000); // 等待最多5秒
-                            killedCount++;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError($"无法终止进程 {process.ProcessName} (PID: {process.Id}): {ex.Message}");
-                        }
-                        finally
-                        {
-                            process.Dispose();
-                        }
+                        _logger.LogInformation($"正在终止 Edge 进程: {process.ProcessName} (PID: {process.Id})");
+                        process.Kill();
+                        process.WaitForExit(3000); // 减少等待时间到3秒
+                        killedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError($"无法终止进程 {process.ProcessName} (PID: {process.Id}): {ex.Message}");
+                    }
+                    finally
+                    {
+                        process.Dispose();
                     }
                 }
 
@@ -208,6 +205,38 @@ namespace EdgeMonitor.Services
             var totalMemory = processes.Sum(p => p.MemoryUsageMB);
 
             return totalCpu > cpuThreshold || totalMemory > memoryThreshold;
+        }
+
+        private Dictionary<int, int> GetAllProcessWindowCounts(int[] processIds)
+        {
+            var windowCounts = new Dictionary<int, int>();
+            var processIdSet = processIds.ToHashSet();
+            
+            // 初始化所有进程的窗口计数为0
+            foreach (var pid in processIds)
+            {
+                windowCounts[pid] = 0;
+            }
+
+            // 一次性枚举所有窗口，避免重复枚举
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (IsWindowVisible(hWnd))
+                {
+                    GetWindowThreadProcessId(hWnd, out uint processId);
+                    if (processIdSet.Contains((int)processId))
+                    {
+                        int length = GetWindowTextLength(hWnd);
+                        if (length > 0)
+                        {
+                            windowCounts[(int)processId]++;
+                        }
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            return windowCounts;
         }
 
         private int GetWindowCountForProcess(int processId)
@@ -257,45 +286,17 @@ namespace EdgeMonitor.Services
                     }
                 }
 
-                // 第一次检测时，记录初始值并返回一个基于当前CPU时间的估算值
+                // 第一次检测时，记录初始值
                 _previousCpuTimes[process.Id] = currentCpuTime;
                 _previousSampleTimes[process.Id] = currentTime;
                 
-                // 对于新进程，尝试使用进程启动时间来估算CPU使用率
-                var processAge = (DateTime.Now - process.StartTime).TotalMilliseconds;
-                if (processAge > 1000) // 如果进程运行超过1秒
-                {
-                    var estimatedCpu = (currentCpuTime / processAge) * 100.0 / Environment.ProcessorCount;
-                    return Math.Max(0, Math.Min(100, estimatedCpu));
-                }
-                
+                // 快速估算：第一次检测时返回0，避免耗时的进程年龄计算
                 return 0.0;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning($"计算进程 {process.Id} CPU使用率失败: {ex.Message}");
                 return 0.0;
-            }
-        }
-
-        private string GetCommandLine(Process process)
-        {
-            try
-            {
-                using (var searcher = new System.Management.ManagementObjectSearcher(
-                    $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {process.Id}"))
-                {
-                    using (var objects = searcher.Get())
-                    {
-                        var result = objects.Cast<System.Management.ManagementObject>()
-                                           .SingleOrDefault()?["CommandLine"]?.ToString();
-                        return result ?? "";
-                    }
-                }
-            }
-            catch
-            {
-                return "";
             }
         }
     }
