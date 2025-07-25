@@ -61,11 +61,16 @@ namespace EdgeMonitor.Views
                     var responseContent = await response.Content.ReadAsStringAsync();
                     var releaseInfo = JsonDocument.Parse(responseContent);
                     
-                    var latestVersion = releaseInfo.RootElement.GetProperty("tag_name").GetString();
+                    // 优先使用 name 字段，如果不可用则使用 tag_name
+                    var latestVersionFromName = releaseInfo.RootElement.GetProperty("name").GetString();
+                    var latestVersionFromTag = releaseInfo.RootElement.GetProperty("tag_name").GetString();
                     var currentVersion = VersionHelper.GetVersionString();
 
+                    // 尝试从 name 字段提取版本号（如 "EdgeMonitor-v1.3" -> "v1.3"）
+                    string? latestVersion = ExtractVersionFromReleaseName(latestVersionFromName) ?? latestVersionFromTag;
+
                     // 比较版本号
-                    if (IsNewerVersion(latestVersion, currentVersion))
+                    if (!string.IsNullOrEmpty(latestVersion) && IsNewerVersion(latestVersion, currentVersion))
                     {
                         var result = MessageBox.Show(
                             $"发现新版本: {latestVersion}\n当前版本: {currentVersion}\n\n是否前往下载页面？",
@@ -86,7 +91,7 @@ namespace EdgeMonitor.Views
                     else
                     {
                         MessageBox.Show(
-                            $"当前已是最新版本: {currentVersion}",
+                            $"当前已是最新版本: {currentVersion}\n(最新发布: {latestVersionFromName ?? latestVersionFromTag})",
                             "检查更新",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
@@ -146,6 +151,40 @@ namespace EdgeMonitor.Views
                     }
                 }
             }
+        }
+
+        private string? ExtractVersionFromReleaseName(string? releaseName)
+        {
+            if (string.IsNullOrEmpty(releaseName)) return null;
+
+            try
+            {
+                // 尝试匹配各种可能的版本号格式
+                var patterns = new[]
+                {
+                    @"EdgeMonitor-v(\d+\.\d+(?:\.\d+)?)",     // EdgeMonitor-v1.3 或 EdgeMonitor-v1.3.0
+                    @"EM-v(\d+\.\d+(?:\.\d+)?)",             // EM-v1.4 或 EM-v1.4.0
+                    @"Edge\s*Monitor-v(\d+\.\d+(?:\.\d+)?)", // Edge Monitor-v1.3 (带空格)
+                    @"[A-Za-z\s]*-v(\d+\.\d+(?:\.\d+)?)",    // 任意前缀-v1.3 (通用匹配)
+                    @"v(\d+\.\d+(?:\.\d+)?)",                // v1.3 或 v1.3.0
+                    @"(\d+\.\d+(?:\.\d+)?)"                  // 1.3 或 1.3.0 (纯数字)
+                };
+
+                foreach (var pattern in patterns)
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(releaseName, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        return "v" + match.Groups[1].Value;
+                    }
+                }
+            }
+            catch
+            {
+                // 解析失败时返回null
+            }
+
+            return null;
         }
 
         private bool IsNewerVersion(string? latestVersion, string currentVersion)

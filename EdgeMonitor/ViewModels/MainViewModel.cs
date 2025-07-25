@@ -14,35 +14,47 @@ namespace EdgeMonitor.ViewModels
         private readonly IDialogService _dialogService;
         private readonly IPrivilegeService _privilegeService;
         private readonly IEdgeMonitorService _edgeMonitorService;
+        private readonly ILogService _logService;
+        private readonly IConfigurationService _configService;
         
         private string _statusMessage = "就绪";
-        private string _monitorData = "";
-        private string _logData = "";
         private int _monitorInterval = 5;
         private bool _autoSaveEnabled = true;
-        private bool _notificationsEnabled = true;
         private DateTime _currentTime = DateTime.Now;
         private string _windowTitle = "Edge Monitor";
         private bool _isMonitoring = false;
         private System.Windows.Threading.DispatcherTimer? _monitorTimer;
         private bool _isCurrentlyMonitoring = false; // 防止重叠检查
+        private CloseAction _closeAction = CloseAction.Ask;
         
         public MainViewModel(
             ILogger<MainViewModel> logger,
             IDataService dataService,
             IDialogService dialogService,
             IPrivilegeService privilegeService,
-            IEdgeMonitorService edgeMonitorService)
+            IEdgeMonitorService edgeMonitorService,
+            ILogService logService,
+            IConfigurationService configService)
         {
             _logger = logger;
             _dataService = dataService;
             _dialogService = dialogService;
             _privilegeService = privilegeService;
             _edgeMonitorService = edgeMonitorService;
+            _logService = logService;
+            _configService = configService;
+            
+            // 订阅日志集合变化事件
+            _logService.LogEntries.CollectionChanged += (s, e) => NotifyLogPropertiesChanged();
+            _logService.MonitorEntries.CollectionChanged += (s, e) => NotifyLogPropertiesChanged();
             
             InitializeCommands();
             StartTimeUpdater();
             UpdateWindowTitle();
+            LoadCloseActionSettings();
+            
+            // 启动时清理过期日志文件
+            _ = Task.Run(async () => await _logService.CleanupOldLogFilesAsync());
         }
 
         #region Properties
@@ -55,32 +67,46 @@ namespace EdgeMonitor.ViewModels
 
         public string MonitorData
         {
-            get => _monitorData;
-            set => SetProperty(ref _monitorData, value);
+            get => string.Join("\n", _logService.MonitorEntries);
         }
 
         public string LogData
         {
-            get => _logData;
-            set => SetProperty(ref _logData, value);
+            get => string.Join("\n", _logService.LogEntries);
+        }
+
+        /// <summary>
+        /// 通知日志属性已更改
+        /// </summary>
+        private void NotifyLogPropertiesChanged()
+        {
+            OnPropertyChanged(nameof(MonitorData));
+            OnPropertyChanged(nameof(LogData));
         }
 
         public int MonitorInterval
         {
             get => _monitorInterval;
-            set => SetProperty(ref _monitorInterval, value);
+            set 
+            {
+                // 验证输入值，确保在合理范围内
+                var newValue = Math.Max(1, Math.Min(3600, value)); // 限制在1-3600秒之间
+                if (SetProperty(ref _monitorInterval, newValue))
+                {
+                    // 如果监控正在运行，更新定时器间隔
+                    if (IsMonitoring && _monitorTimer != null)
+                    {
+                        _monitorTimer.Interval = TimeSpan.FromSeconds(_monitorInterval);
+                        _logger.LogInformation($"监控间隔已更新为: {_monitorInterval}秒");
+                    }
+                }
+            }
         }
 
         public bool AutoSaveEnabled
         {
             get => _autoSaveEnabled;
             set => SetProperty(ref _autoSaveEnabled, value);
-        }
-
-        public bool NotificationsEnabled
-        {
-            get => _notificationsEnabled;
-            set => SetProperty(ref _notificationsEnabled, value);
         }
 
         public DateTime CurrentTime
@@ -101,6 +127,12 @@ namespace EdgeMonitor.ViewModels
             set => SetProperty(ref _isMonitoring, value);
         }
 
+        public CloseAction CloseAction
+        {
+            get => _closeAction;
+            set => SetProperty(ref _closeAction, value);
+        }
+
         #endregion
 
         #region Commands
@@ -112,6 +144,9 @@ namespace EdgeMonitor.ViewModels
         public ICommand CheckAdminCommand { get; private set; } = null!;
         public ICommand TestEdgeDetectionCommand { get; private set; } = null!;
         public ICommand ForceKillEdgeCommand { get; private set; } = null!;
+        public ICommand ViewLogStatsCommand { get; private set; } = null!;
+        public ICommand OpenLogFolderCommand { get; private set; } = null!;
+        public ICommand ResetCloseChoiceCommand { get; private set; } = null!;
 
         #endregion
 
@@ -124,6 +159,9 @@ namespace EdgeMonitor.ViewModels
             CheckAdminCommand = new RelayCommand(ExecuteCheckAdmin);
             TestEdgeDetectionCommand = new RelayCommand(ExecuteTestEdgeDetection);
             ForceKillEdgeCommand = new RelayCommand(ExecuteForceKillEdge);
+            ViewLogStatsCommand = new RelayCommand(ExecuteViewLogStats);
+            OpenLogFolderCommand = new RelayCommand(ExecuteOpenLogFolder);
+            ResetCloseChoiceCommand = new RelayCommand(ExecuteResetCloseChoice);
         }
 
         private void StartTimeUpdater()
@@ -163,7 +201,7 @@ namespace EdgeMonitor.ViewModels
             aboutWindow.ShowDialog();
         }
 
-        private void ExecuteStartMonitoring()
+        private async void ExecuteStartMonitoring()
         {
             if (IsMonitoring)
             {
@@ -175,9 +213,9 @@ namespace EdgeMonitor.ViewModels
             IsMonitoring = true;
             StatusMessage = "Edge监控已启动";
             
-            var message = $"[{DateTime.Now:HH:mm:ss}] Edge监控已启动 - 检查间隔: {MonitorInterval}秒\n";
-            MonitorData += message;
-            LogData += $"[{DateTime.Now:HH:mm:ss}] INFO: Edge监控服务已启动\n";
+            var message = $"Edge监控已启动 - 检查间隔: {MonitorInterval}秒";
+            await _logService.AddMonitorEntryAsync(message);
+            await _logService.AddLogEntryAsync("INFO: Edge监控服务已启动");
 
             // 启动监控定时器
             _monitorTimer = new System.Windows.Threading.DispatcherTimer
@@ -209,7 +247,7 @@ namespace EdgeMonitor.ViewModels
             await PerformEdgeMonitoringAsync();
         }
 
-        private void ExecuteStopMonitoring()
+        private async void ExecuteStopMonitoring()
         {
             if (!IsMonitoring)
             {
@@ -224,17 +262,16 @@ namespace EdgeMonitor.ViewModels
             _monitorTimer?.Stop();
             _monitorTimer = null;
             
-            var message = $"[{DateTime.Now:HH:mm:ss}] Edge监控已停止\n";
-            MonitorData += message;
-            LogData += $"[{DateTime.Now:HH:mm:ss}] INFO: Edge监控服务已停止\n";
+            var message = "Edge监控已停止";
+            await _logService.AddMonitorEntryAsync(message);
+            await _logService.AddLogEntryAsync("INFO: Edge监控服务已停止");
         }
 
         private void ExecuteClearLogs()
         {
-            _logger.LogInformation("清除日志");
-            StatusMessage = "日志已清除";
-            MonitorData = "";
-            LogData = "";
+            _logger.LogInformation("清除内存日志");
+            StatusMessage = "内存日志已清除";
+            _logService.ClearMemoryLogs();
         }
 
         private void ExecuteCheckAdmin()
@@ -274,16 +311,16 @@ namespace EdgeMonitor.ViewModels
                                $"有可见窗口: {hasVisibleWindows}\n" +
                                $"资源异常: {hasAbnormalUsage}\n" +
                                $"满足终止条件: {!hasVisibleWindows && hasAbnormalUsage}\n" +
-                               $"==================\n\n";
+                               $"==================";
                 
-                LogData += $"[{DateTime.Now:HH:mm:ss}] {testResult}";
+                await _logService.AddLogEntryAsync(testResult);
                 
                 foreach (var process in edgeProcesses)
                 {
                     var processInfo = $"进程 {process.ProcessId}: {process.ProcessName}, " +
                                     $"CPU: {process.CpuUsage:F1}%, 内存: {process.MemoryUsageMB}MB, " +
-                                    $"窗口数: {process.WindowCount}\n";
-                    LogData += $"[{DateTime.Now:HH:mm:ss}] {processInfo}";
+                                    $"窗口数: {process.WindowCount}";
+                    await _logService.AddLogEntryAsync(processInfo);
                 }
                 
                 StatusMessage = $"测试完成 - 进程:{edgeProcesses.Length}, CPU:{totalCpu:F1}%, 内存:{totalMemory}MB";
@@ -291,7 +328,7 @@ namespace EdgeMonitor.ViewModels
             catch (Exception ex)
             {
                 _logger.LogError($"Edge检测测试失败: {ex.Message}");
-                LogData += $"[{DateTime.Now:HH:mm:ss}] 测试失败: {ex.Message}\n";
+                await _logService.AddLogEntryAsync($"测试失败: {ex.Message}");
                 StatusMessage = "测试失败";
             }
         }
@@ -308,9 +345,9 @@ namespace EdgeMonitor.ViewModels
                 StatusMessage = "正在强制终止Edge进程...";
                 await _edgeMonitorService.KillAllEdgeProcessesAsync();
                 
-                var message = $"[{DateTime.Now:HH:mm:ss}] 手动强制终止Edge进程完成\n";
-                MonitorData += message;
-                LogData += message;
+                var message = "手动强制终止Edge进程完成";
+                await _logService.AddMonitorEntryAsync(message);
+                await _logService.AddLogEntryAsync(message);
                 StatusMessage = "Edge进程已被手动终止";
                 
                 _dialogService.ShowMessage("操作完成", "所有Edge进程已被强制终止");
@@ -318,9 +355,95 @@ namespace EdgeMonitor.ViewModels
             catch (Exception ex)
             {
                 _logger.LogError($"强制终止Edge进程失败: {ex.Message}");
-                LogData += $"[{DateTime.Now:HH:mm:ss}] 强制终止失败: {ex.Message}\n";
+                await _logService.AddLogEntryAsync($"强制终止失败: {ex.Message}");
                 StatusMessage = "强制终止失败";
                 _dialogService.ShowMessage("操作失败", $"强制终止Edge进程失败: {ex.Message}");
+            }
+        }
+
+        private async void ExecuteViewLogStats()
+        {
+            try
+            {
+                var stats = await _logService.GetLogStatisticsAsync();
+                var message = $"日志统计信息:\n" +
+                             $"日志文件数量: {stats.TotalFiles}\n" +
+                             $"总文件大小: {stats.TotalSizeMB:F2} MB\n" +
+                             $"内存中日志条数: {stats.MemoryLogCount}\n" +
+                             $"内存中监控数据条数: {stats.MemoryMonitorCount}\n" +
+                             $"日志目录: {stats.LogDirectory}";
+                
+                _dialogService.ShowMessage("日志统计", message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"获取日志统计失败: {ex.Message}");
+                _dialogService.ShowMessage("错误", $"获取日志统计失败: {ex.Message}");
+            }
+        }
+
+        private void ExecuteOpenLogFolder()
+        {
+            try
+            {
+                var logPath = _logService.GetLogFilePath();
+                System.Diagnostics.Process.Start("explorer.exe", logPath);
+                _logger.LogInformation($"打开日志文件夹: {logPath}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"打开日志文件夹失败: {ex.Message}");
+                _dialogService.ShowMessage("错误", $"打开日志文件夹失败: {ex.Message}");
+            }
+        }
+
+        private async void ExecuteResetCloseChoice()
+        {
+            try
+            {
+                _configService.SetValue("UI:RememberCloseChoice", false);
+                _configService.SetValue("UI:CloseToTray", "");
+                await _configService.SaveAsync();
+                
+                CloseAction = CloseAction.Ask;
+                
+                _logger.LogInformation("关闭选择已重置");
+                _dialogService.ShowMessage("成功", "关闭选择已重置，下次关闭时将重新询问。");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"重置关闭选择失败: {ex.Message}");
+                _dialogService.ShowMessage("错误", $"重置关闭选择失败: {ex.Message}");
+            }
+        }
+
+        private void LoadCloseActionSettings()
+        {
+            try
+            {
+                var rememberChoice = _configService.GetValue<bool>("UI:RememberCloseChoice");
+                var savedChoice = _configService.GetValue<string>("UI:CloseToTray");
+
+                if (rememberChoice && !string.IsNullOrEmpty(savedChoice))
+                {
+                    CloseAction = savedChoice.ToLower() switch
+                    {
+                        "true" => CloseAction.MinimizeToTray,
+                        "false" => CloseAction.Exit,
+                        _ => CloseAction.Ask
+                    };
+                }
+                else
+                {
+                    CloseAction = CloseAction.Ask;
+                }
+
+                _logger.LogInformation($"加载关闭行为设置: {CloseAction}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"加载关闭行为设置失败: {ex.Message}");
+                CloseAction = CloseAction.Ask;
             }
         }
 
@@ -348,12 +471,12 @@ namespace EdgeMonitor.ViewModels
                 
                 if (!edgeProcesses.Any())
                 {
-                    var message = $"[{DateTime.Now:HH:mm:ss}] 未检测到Edge进程\n";
+                    var message = "未检测到Edge进程";
                     System.Windows.Application.Current.Dispatcher.Invoke(() =>
                     {
-                        MonitorData += message;
                         StatusMessage = "未检测到Edge进程";
                     });
+                    await _logService.AddMonitorEntryAsync(message);
                     _logger.LogInformation("未检测到Edge进程，跳过检查");
                     return;
                 }
@@ -378,22 +501,19 @@ namespace EdgeMonitor.ViewModels
                 
                 System.Windows.Application.Current.Dispatcher.Invoke(() =>
                 {
-                    var message = $"[{DateTime.Now:HH:mm:ss}] {statusInfo}\n";
-                    MonitorData += message;
                     StatusMessage = statusInfo;
                 });
+
+                await _logService.AddMonitorEntryAsync(statusInfo);
 
                 // 记录详细信息
                 foreach (var process in edgeProcesses)
                 {
-                    var processDetail = $"[{DateTime.Now:HH:mm:ss}] 进程详情: PID={process.ProcessId}, " +
+                    var processDetail = $"进程详情: PID={process.ProcessId}, " +
                                       $"CPU={process.CpuUsage:F1}%, 内存={process.MemoryUsageMB}MB, " +
-                                      $"窗口数={process.WindowCount}\n";
+                                      $"窗口数={process.WindowCount}";
                     
-                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        LogData += processDetail;
-                    });
+                    await _logService.AddLogEntryAsync(processDetail);
                     
                     _logger.LogDebug($"进程 {process.ProcessId}: CPU={process.CpuUsage:F1}%, 内存={process.MemoryUsageMB}MB, 窗口={process.WindowCount}");
                 }
@@ -404,12 +524,9 @@ namespace EdgeMonitor.ViewModels
                 {
                     _logger.LogWarning($"满足终止条件! Edge异常检测 - CPU: {totalCpu:F1}%, 内存: {totalMemory}MB, 后台运行: {isRunningInBackground}");
                     
-                    var killMessage = $"[{DateTime.Now:HH:mm:ss}] 检测到Edge在后台运行且资源占用异常，正在终止...\n";
-                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        MonitorData += killMessage;
-                        LogData += $"[{DateTime.Now:HH:mm:ss}] WARNING: Edge异常检测 - CPU: {totalCpu:F1}%, 内存: {totalMemory}MB\n";
-                    });
+                    var killMessage = "检测到Edge在后台运行且资源占用异常，正在终止...";
+                    await _logService.AddMonitorEntryAsync(killMessage);
+                    await _logService.AddLogEntryAsync($"WARNING: Edge异常检测 - CPU: {totalCpu:F1}%, 内存: {totalMemory}MB");
 
                     // 执行终止操作
                     var killStartTime = DateTime.Now;
@@ -417,11 +534,11 @@ namespace EdgeMonitor.ViewModels
                     var killEndTime = DateTime.Now;
                     _logger.LogInformation($"[{killEndTime:HH:mm:ss.fff}] Edge进程终止耗时: {(killEndTime - killStartTime).TotalMilliseconds}ms");
                     
-                    var killedMessage = $"[{DateTime.Now:HH:mm:ss}] Edge进程已被终止\n";
+                    var killedMessage = "Edge进程已被终止";
+                    await _logService.AddMonitorEntryAsync(killedMessage);
+                    await _logService.AddLogEntryAsync("INFO: Edge进程已被终止");
                     System.Windows.Application.Current.Dispatcher.Invoke(() =>
                     {
-                        MonitorData += killedMessage;
-                        LogData += $"[{DateTime.Now:HH:mm:ss}] INFO: Edge进程已被终止\n";
                         StatusMessage = "Edge进程已被终止";
                     });
 
@@ -431,10 +548,7 @@ namespace EdgeMonitor.ViewModels
                 else
                 {
                     _logger.LogInformation("不满足终止条件，继续监控");
-                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        LogData += $"[{DateTime.Now:HH:mm:ss}] INFO: 检查完成 - 不满足终止条件\n";
-                    });
+                    await _logService.AddLogEntryAsync("INFO: 检查完成 - 不满足终止条件");
                 }
                 
                 var endTime = DateTime.Now;
@@ -445,10 +559,11 @@ namespace EdgeMonitor.ViewModels
                 var endTime = DateTime.Now;
                 _logger.LogError($"[{endTime:HH:mm:ss.fff}] Edge监控过程中发生错误(耗时: {(endTime - startTime).TotalMilliseconds}ms): {ex.Message}");
                 _logger.LogError($"错误堆栈: {ex.StackTrace}");
+                
+                var errorMessage = $"监控错误: {ex.Message}";
+                await _logService.AddLogEntryAsync(errorMessage);
                 System.Windows.Application.Current.Dispatcher.Invoke(() =>
                 {
-                    var errorMessage = $"[{DateTime.Now:HH:mm:ss}] 监控错误: {ex.Message}\n";
-                    LogData += errorMessage;
                     StatusMessage = "监控出现错误";
                 });
             }

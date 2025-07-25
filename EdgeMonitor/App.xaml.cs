@@ -36,6 +36,11 @@ namespace EdgeMonitor
 
                 // 获取主窗口并显示
                 var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+                var trayService = _host.Services.GetRequiredService<ITrayService>();
+                
+                // 初始化托盘服务
+                trayService.InitializeTray();
+                
                 mainWindow.Show();
 
                 base.OnStartup(e);
@@ -61,6 +66,9 @@ namespace EdgeMonitor
                     services.AddSingleton<IEdgeMonitorService, EdgeMonitorService>();
                     services.AddSingleton<IDataService, DataService>();
                     services.AddSingleton<IDialogService, DialogService>();
+                    services.AddSingleton<ILogService, LogService>();
+                    services.AddSingleton<ITrayService, TrayService>();
+                    services.AddSingleton<IConfigurationService, ConfigurationService>();
                 })
                 .ConfigureLogging(logging =>
                 {
