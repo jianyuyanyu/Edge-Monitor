@@ -17,6 +17,8 @@ namespace EdgeMonitor.ViewModels
         private readonly ILogService _logService;
         private readonly IConfigurationService _configService;
         
+        private readonly IStartupService _startupService;
+        
         private string _statusMessage = "就绪";
         private int _monitorInterval = 5;
         private bool _autoSaveEnabled = true;
@@ -26,6 +28,7 @@ namespace EdgeMonitor.ViewModels
         private System.Windows.Threading.DispatcherTimer? _monitorTimer;
         private bool _isCurrentlyMonitoring = false; // 防止重叠检查
         private CloseAction _closeAction = CloseAction.Ask;
+        private bool _isStartupEnabled = false;
         
         public MainViewModel(
             ILogger<MainViewModel> logger,
@@ -34,7 +37,8 @@ namespace EdgeMonitor.ViewModels
             IPrivilegeService privilegeService,
             IEdgeMonitorService edgeMonitorService,
             ILogService logService,
-            IConfigurationService configService)
+            IConfigurationService configService,
+            IStartupService startupService)
         {
             _logger = logger;
             _dataService = dataService;
@@ -43,6 +47,7 @@ namespace EdgeMonitor.ViewModels
             _edgeMonitorService = edgeMonitorService;
             _logService = logService;
             _configService = configService;
+            _startupService = startupService;
             
             // 订阅日志集合变化事件
             _logService.LogEntries.CollectionChanged += (s, e) => NotifyLogPropertiesChanged();
@@ -52,6 +57,7 @@ namespace EdgeMonitor.ViewModels
             StartTimeUpdater();
             UpdateWindowTitle();
             LoadCloseActionSettings();
+            LoadStartupSettings();
             
             // 启动时清理过期日志文件
             _ = Task.Run(async () => await _logService.CleanupOldLogFilesAsync());
@@ -130,7 +136,27 @@ namespace EdgeMonitor.ViewModels
         public CloseAction CloseAction
         {
             get => _closeAction;
-            set => SetProperty(ref _closeAction, value);
+            set 
+            {
+                if (SetProperty(ref _closeAction, value))
+                {
+                    // 异步保存关闭行为设置
+                    _ = Task.Run(async () => await SaveCloseActionAsync(value));
+                }
+            }
+        }
+
+        public bool IsStartupEnabled
+        {
+            get => _isStartupEnabled;
+            set 
+            {
+                if (SetProperty(ref _isStartupEnabled, value))
+                {
+                    // 异步调用启动服务
+                    _ = Task.Run(async () => await UpdateStartupStatusAsync(value));
+                }
+            }
         }
 
         #endregion
@@ -447,6 +473,56 @@ namespace EdgeMonitor.ViewModels
             }
         }
 
+        private async Task SaveCloseActionAsync(CloseAction action)
+        {
+            try
+            {
+                _logger.LogInformation($"保存关闭行为设置: {action}");
+                
+                if (action == CloseAction.Ask)
+                {
+                    // 如果选择"每次询问"，清除记住的选择
+                    _configService.SetValue("UI:RememberCloseChoice", false);
+                    _configService.SetValue("UI:CloseToTray", "");
+                }
+                else
+                {
+                    // 保存具体的选择
+                    var closeToTray = action == CloseAction.MinimizeToTray ? "true" : "false";
+                    _configService.SetValue("UI:CloseToTray", closeToTray);
+                    _configService.SetValue("UI:RememberCloseChoice", true);
+                }
+                
+                await _configService.SaveAsync();
+                
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    StatusMessage = $"已保存关闭行为设置: {GetCloseActionDisplayName(action)}";
+                });
+                
+                _logger.LogInformation($"关闭行为设置已保存: {action}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "保存关闭行为设置时发生错误");
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    StatusMessage = $"保存关闭行为设置失败: {ex.Message}";
+                });
+            }
+        }
+
+        private static string GetCloseActionDisplayName(CloseAction action)
+        {
+            return action switch
+            {
+                CloseAction.Exit => "关闭程序",
+                CloseAction.MinimizeToTray => "最小化到托盘",
+                CloseAction.Ask => "每次询问",
+                _ => "未知"
+            };
+        }
+
         private async Task PerformEdgeMonitoringAsync()
         {
             // 设置监控标志，防止重叠
@@ -571,6 +647,89 @@ namespace EdgeMonitor.ViewModels
             {
                 // 重置监控标志
                 _isCurrentlyMonitoring = false;
+            }
+        }
+
+        private void LoadStartupSettings()
+        {
+            try
+            {
+                IsStartupEnabled = _startupService.IsStartupEnabled();
+                _logger.LogInformation($"当前开机自启动状态: {IsStartupEnabled}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "加载开机自启动设置时发生错误");
+                IsStartupEnabled = false;
+            }
+        }
+
+        private async Task UpdateStartupStatusAsync(bool enable)
+        {
+            try
+            {
+                _logger.LogInformation($"更新开机自启动状态: {enable}");
+                
+                bool success;
+                if (enable)
+                {
+                    // 启用开机自启动（以管理员权限）
+                    success = await _startupService.EnableStartupAsync(true);
+                    if (success)
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "已启用开机自启动";
+                        });
+                        _logger.LogInformation("开机自启动已启用（管理员权限）");
+                    }
+                    else
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "启用开机自启动失败";
+                            // 如果启用失败，需要重置UI状态
+                            _isStartupEnabled = false;
+                            OnPropertyChanged(nameof(IsStartupEnabled));
+                        });
+                        _logger.LogError("启用开机自启动失败");
+                    }
+                }
+                else
+                {
+                    // 禁用开机自启动
+                    success = await _startupService.DisableStartupAsync();
+                    if (success)
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "已禁用开机自启动";
+                        });
+                        _logger.LogInformation("开机自启动已禁用");
+                    }
+                    else
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "禁用开机自启动失败";
+                            // 如果禁用失败，需要重置UI状态
+                            _isStartupEnabled = true;
+                            OnPropertyChanged(nameof(IsStartupEnabled));
+                        });
+                        _logger.LogError("禁用开机自启动失败");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新开机自启动状态时发生错误");
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    StatusMessage = $"开机自启动操作失败: {ex.Message}";
+                    // 发生异常时，重置为原来的状态
+                    _isStartupEnabled = !enable;
+                    OnPropertyChanged(nameof(IsStartupEnabled));
+                });
             }
         }
 

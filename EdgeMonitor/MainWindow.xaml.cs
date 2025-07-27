@@ -38,7 +38,7 @@ namespace EdgeMonitor
             _logger.LogInformation("主窗口已初始化，托盘功能已启用");
         }
 
-        private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+        private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
             // 如果已经决定真正关闭，不再询问
             if (_isReallyClosing)
@@ -50,46 +50,21 @@ namespace EdgeMonitor
             // 取消关闭事件
             e.Cancel = true;
 
-            // 检查是否记住了用户选择
-            var rememberChoice = _configService.GetValue<bool>("UI:RememberCloseChoice");
-            var savedChoice = _configService.GetValue<string?>("UI:CloseToTray");
-
-            CloseOption option;
-
-            if (rememberChoice && !string.IsNullOrEmpty(savedChoice))
-            {
-                // 使用保存的选择
-                option = savedChoice.ToLower() switch
-                {
-                    "true" => CloseOption.MinimizeToTray,
-                    "false" => CloseOption.Exit,
-                    _ => CloseOption.MinimizeToTray // 默认值
-                };
-                _logger.LogInformation($"使用保存的关闭选择: {option}");
-            }
-            else
-            {
-                // 显示选择对话框
-                var result = ShowCloseOptionsDialog();
-                option = result.Option;
-
-                // 如果用户选择记住选择，保存到配置
-                if (result.RememberChoice && option != CloseOption.Cancel)
-                {
-                    await SaveCloseChoiceAsync(option);
-                }
-            }
+            // 使用ViewModel中的CloseAction设置
+            var closeAction = _viewModel.CloseAction;
             
-            switch (option)
+            switch (closeAction)
             {
-                case CloseOption.MinimizeToTray:
+                case CloseAction.MinimizeToTray:
                     MinimizeToTray();
                     break;
-                case CloseOption.Exit:
+                case CloseAction.Exit:
                     ReallyClose();
                     break;
-                case CloseOption.Cancel:
-                    // 什么都不做，继续显示窗口
+                case CloseAction.Ask:
+                    // 显示选择对话框
+                    var result = ShowCloseOptionsDialog();
+                    HandleCloseDialogResult(result);
                     break;
             }
         }
@@ -106,6 +81,39 @@ namespace EdgeMonitor
             }
             
             return (CloseOption.Cancel, false);
+        }
+
+        private void HandleCloseDialogResult((CloseOption Option, bool RememberChoice) result)
+        {
+            var option = result.Option;
+            
+            // 如果用户选择记住选择，更新ViewModel的CloseAction并保存
+            if (result.RememberChoice && option != CloseOption.Cancel)
+            {
+                var closeAction = option switch
+                {
+                    CloseOption.MinimizeToTray => CloseAction.MinimizeToTray,
+                    CloseOption.Exit => CloseAction.Exit,
+                    _ => CloseAction.Ask
+                };
+                
+                // 更新ViewModel的设置（这会自动触发保存）
+                _viewModel.CloseAction = closeAction;
+            }
+            
+            // 执行相应的关闭操作
+            switch (option)
+            {
+                case CloseOption.MinimizeToTray:
+                    MinimizeToTray();
+                    break;
+                case CloseOption.Exit:
+                    ReallyClose();
+                    break;
+                case CloseOption.Cancel:
+                    // 什么都不做，继续显示窗口
+                    break;
+            }
         }
 
         private async Task SaveCloseChoiceAsync(CloseOption option)
@@ -160,19 +168,5 @@ namespace EdgeMonitor
             _logger.LogInformation("程序正在退出");
             Application.Current.Shutdown();
         }
-    }
-
-    public enum CloseOption
-    {
-        Cancel,
-        MinimizeToTray,
-        Exit
-    }
-
-    public enum CloseAction
-    {
-        Ask,
-        MinimizeToTray,
-        Exit
     }
 }

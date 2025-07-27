@@ -148,6 +148,17 @@
                                              IsChecked="{Binding AutoSaveEnabled}"
                                              Margin="0,10"/>
                                     
+                                    <TextBlock Text="启动设置" FontWeight="Bold" Margin="0,15,0,5"/>
+                                    
+                                    <CheckBox Content="开机自启动" 
+                                             IsChecked="{Binding IsStartupEnabled}"
+                                             Margin="0,5"/>
+                                    <TextBlock Text="启用后将在系统启动时自动运行 Edge Monitor" 
+                                              Margin="20,0,0,10" 
+                                              FontSize="10" 
+                                              Foreground="Gray" 
+                                              TextWrapping="Wrap"/>
+                                    
                                     <TextBlock Text="窗口关闭行为" FontWeight="Bold" Margin="0,15,0,5"/>
                                     
                                     <TextBlock Text="点击关闭按钮时默认的操作:" Margin="0,5"/>

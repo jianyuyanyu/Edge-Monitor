@@ -88,8 +88,8 @@ namespace EdgeMonitor.Services
             {
                 var options = new JsonSerializerOptions
                 {
-                    WriteIndented = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                    WriteIndented = true
+                    // 移除PropertyNamingPolicy，保持原始键名
                 };
 
                 var json = JsonSerializer.Serialize(_configData, options);
@@ -114,8 +114,8 @@ namespace EdgeMonitor.Services
                 if (File.Exists(_configFilePath))
                 {
                     var json = File.ReadAllText(_configFilePath);
-                    _configData = JsonSerializer.Deserialize<Dictionary<string, object>>(json) 
-                                ?? new Dictionary<string, object>();
+                    var jsonDoc = JsonDocument.Parse(json);
+                    _configData = ConvertJsonElementToDictionary(jsonDoc.RootElement);
                 }
                 else
                 {
@@ -127,6 +127,45 @@ namespace EdgeMonitor.Services
             {
                 _logger.LogError($"加载配置文件失败: {ex.Message}");
                 _configData = new Dictionary<string, object>();
+            }
+        }
+
+        private Dictionary<string, object> ConvertJsonElementToDictionary(JsonElement element)
+        {
+            var result = new Dictionary<string, object>();
+            
+            foreach (var property in element.EnumerateObject())
+            {
+                result[property.Name] = ConvertJsonElementToObject(property.Value);
+            }
+            
+            return result;
+        }
+
+        private object ConvertJsonElementToObject(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    return ConvertJsonElementToDictionary(element);
+                case JsonValueKind.Array:
+                    return element.EnumerateArray().Select(ConvertJsonElementToObject).ToArray();
+                case JsonValueKind.String:
+                    return element.GetString() ?? "";
+                case JsonValueKind.Number:
+                    if (element.TryGetInt32(out int intValue))
+                        return intValue;
+                    if (element.TryGetDouble(out double doubleValue))
+                        return doubleValue;
+                    return element.GetDecimal();
+                case JsonValueKind.True:
+                    return true;
+                case JsonValueKind.False:
+                    return false;
+                case JsonValueKind.Null:
+                    return null;
+                default:
+                    return element.ToString();
             }
         }
     }
