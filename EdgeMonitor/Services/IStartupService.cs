@@ -25,6 +25,18 @@ namespace EdgeMonitor.Services
         Task<bool> EnableStartupAsync(bool runAsAdmin = false);
 
         /// <summary>
+        /// 启用开机后自动在托盘监测
+        /// </summary>
+        /// <returns>如果成功启用则返回true</returns>
+        Task<bool> EnableTrayMonitorStartupAsync();
+
+        /// <summary>
+        /// 检查是否已启用开机后自动在托盘监测
+        /// </summary>
+        /// <returns>如果已启用则返回true</returns>
+        bool IsTrayMonitorStartupEnabled();
+
+        /// <summary>
         /// 禁用开机自启动
         /// </summary>
         /// <returns>如果成功禁用则返回true</returns>

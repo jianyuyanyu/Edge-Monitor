@@ -159,6 +159,15 @@
                                               Foreground="Gray" 
                                               TextWrapping="Wrap"/>
                                     
+                                    <CheckBox Content="开机后自动在托盘监测" 
+                                             IsChecked="{Binding IsTrayMonitorStartupEnabled}"
+                                             Margin="0,5"/>
+                                    <TextBlock Text="启用后将在系统启动时自动在托盘运行并开始监测，不显示主窗口" 
+                                              Margin="20,0,0,10" 
+                                              FontSize="10" 
+                                              Foreground="Gray" 
+                                              TextWrapping="Wrap"/>
+                                    
                                     <TextBlock Text="窗口关闭行为" FontWeight="Bold" Margin="0,15,0,5"/>
                                     
                                     <TextBlock Text="点击关闭按钮时默认的操作:" Margin="0,5"/>

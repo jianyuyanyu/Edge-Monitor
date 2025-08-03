@@ -18,6 +18,7 @@ namespace EdgeMonitor.ViewModels
         private readonly IConfigurationService _configService;
         
         private readonly IStartupService _startupService;
+        private readonly ITrayService _trayService;
         
         private string _statusMessage = "就绪";
         private int _monitorInterval = 5;
@@ -29,6 +30,7 @@ namespace EdgeMonitor.ViewModels
         private bool _isCurrentlyMonitoring = false; // 防止重叠检查
         private CloseAction _closeAction = CloseAction.Ask;
         private bool _isStartupEnabled = false;
+        private bool _isTrayMonitorStartupEnabled = false;
         
         public MainViewModel(
             ILogger<MainViewModel> logger,
@@ -38,7 +40,8 @@ namespace EdgeMonitor.ViewModels
             IEdgeMonitorService edgeMonitorService,
             ILogService logService,
             IConfigurationService configService,
-            IStartupService startupService)
+            IStartupService startupService,
+            ITrayService trayService)
         {
             _logger = logger;
             _dataService = dataService;
@@ -48,6 +51,7 @@ namespace EdgeMonitor.ViewModels
             _logService = logService;
             _configService = configService;
             _startupService = startupService;
+            _trayService = trayService;
             
             // 订阅日志集合变化事件
             _logService.LogEntries.CollectionChanged += (s, e) => NotifyLogPropertiesChanged();
@@ -153,8 +157,33 @@ namespace EdgeMonitor.ViewModels
             {
                 if (SetProperty(ref _isStartupEnabled, value))
                 {
+                    // 如果启用开机自启，则禁用托盘监测启动
+                    if (value && _isTrayMonitorStartupEnabled)
+                    {
+                        _isTrayMonitorStartupEnabled = false;
+                        OnPropertyChanged(nameof(IsTrayMonitorStartupEnabled));
+                    }
                     // 异步调用启动服务
                     _ = Task.Run(async () => await UpdateStartupStatusAsync(value));
+                }
+            }
+        }
+
+        public bool IsTrayMonitorStartupEnabled
+        {
+            get => _isTrayMonitorStartupEnabled;
+            set 
+            {
+                if (SetProperty(ref _isTrayMonitorStartupEnabled, value))
+                {
+                    // 如果启用托盘监测启动，则禁用开机自启
+                    if (value && _isStartupEnabled)
+                    {
+                        _isStartupEnabled = false;
+                        OnPropertyChanged(nameof(IsStartupEnabled));
+                    }
+                    // 异步调用托盘监测启动服务
+                    _ = Task.Run(async () => await UpdateTrayMonitorStartupStatusAsync(value));
                 }
             }
         }
@@ -239,6 +268,9 @@ namespace EdgeMonitor.ViewModels
             IsMonitoring = true;
             StatusMessage = "Edge监控已启动";
             
+            // 更新托盘状态
+            _trayService.UpdateTrayStatus(true);
+            
             var message = $"Edge监控已启动 - 检查间隔: {MonitorInterval}秒";
             await _logService.AddMonitorEntryAsync(message);
             await _logService.AddLogEntryAsync("INFO: Edge监控服务已启动");
@@ -285,12 +317,36 @@ namespace EdgeMonitor.ViewModels
             IsMonitoring = false;
             StatusMessage = "Edge监控已停止";
             
+            // 更新托盘状态
+            _trayService.UpdateTrayStatus(false);
+            
             _monitorTimer?.Stop();
             _monitorTimer = null;
             
             var message = "Edge监控已停止";
             await _logService.AddMonitorEntryAsync(message);
             await _logService.AddLogEntryAsync("INFO: Edge监控服务已停止");
+        }
+
+        /// <summary>
+        /// 启动托盘监测模式
+        /// </summary>
+        public async void StartTrayMonitoring()
+        {
+            try
+            {
+                _logger.LogInformation("启动托盘监测模式");
+                
+                // 直接开始监测，不显示窗口
+                await Task.Delay(2000); // 等待系统完全启动
+                ExecuteStartMonitoring();
+                
+                _logger.LogInformation("托盘监测模式已启动");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "启动托盘监测模式时发生错误");
+            }
         }
 
         private void ExecuteClearLogs()
@@ -655,12 +711,15 @@ namespace EdgeMonitor.ViewModels
             try
             {
                 IsStartupEnabled = _startupService.IsStartupEnabled();
+                IsTrayMonitorStartupEnabled = _startupService.IsTrayMonitorStartupEnabled();
                 _logger.LogInformation($"当前开机自启动状态: {IsStartupEnabled}");
+                _logger.LogInformation($"当前托盘监测开机自启动状态: {IsTrayMonitorStartupEnabled}");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "加载开机自启动设置时发生错误");
                 IsStartupEnabled = false;
+                IsTrayMonitorStartupEnabled = false;
             }
         }
 
@@ -729,6 +788,75 @@ namespace EdgeMonitor.ViewModels
                     // 发生异常时，重置为原来的状态
                     _isStartupEnabled = !enable;
                     OnPropertyChanged(nameof(IsStartupEnabled));
+                });
+            }
+        }
+
+        private async Task UpdateTrayMonitorStartupStatusAsync(bool enable)
+        {
+            try
+            {
+                _logger.LogInformation($"更新托盘监测开机自启动状态: {enable}");
+                
+                bool success;
+                if (enable)
+                {
+                    // 启用托盘监测开机自启动
+                    success = await _startupService.EnableTrayMonitorStartupAsync();
+                    if (success)
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "已启用开机后自动在托盘监测";
+                        });
+                        _logger.LogInformation("托盘监测开机自启动已启用");
+                    }
+                    else
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "启用托盘监测开机自启动失败";
+                            // 如果启用失败，需要重置UI状态
+                            _isTrayMonitorStartupEnabled = false;
+                            OnPropertyChanged(nameof(IsTrayMonitorStartupEnabled));
+                        });
+                        _logger.LogError("启用托盘监测开机自启动失败");
+                    }
+                }
+                else
+                {
+                    // 禁用托盘监测开机自启动
+                    success = await _startupService.DisableStartupAsync();
+                    if (success)
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "已禁用托盘监测开机自启动";
+                        });
+                        _logger.LogInformation("托盘监测开机自启动已禁用");
+                    }
+                    else
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            StatusMessage = "禁用托盘监测开机自启动失败";
+                            // 如果禁用失败，需要重置UI状态
+                            _isTrayMonitorStartupEnabled = true;
+                            OnPropertyChanged(nameof(IsTrayMonitorStartupEnabled));
+                        });
+                        _logger.LogError("禁用托盘监测开机自启动失败");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新托盘监测开机自启动状态时发生错误");
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    StatusMessage = $"托盘监测开机自启动操作失败: {ex.Message}";
+                    // 发生异常时，重置为原来的状态
+                    _isTrayMonitorStartupEnabled = !enable;
+                    OnPropertyChanged(nameof(IsTrayMonitorStartupEnabled));
                 });
             }
         }

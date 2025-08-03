@@ -3,6 +3,7 @@ using Hardcodet.Wpf.TaskbarNotification;
 using Microsoft.Extensions.Logging;
 using System.IO;
 using System.Drawing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EdgeMonitor.Services
 {
@@ -29,6 +30,12 @@ namespace EdgeMonitor.Services
         void ShowNotification(string title, string message);
 
         /// <summary>
+        /// 更新托盘状态
+        /// </summary>
+        /// <param name="isMonitoring">是否正在监控</param>
+        void UpdateTrayStatus(bool isMonitoring);
+
+        /// <summary>
         /// 释放托盘资源
         /// </summary>
         void Dispose();
@@ -37,12 +44,14 @@ namespace EdgeMonitor.Services
     public class TrayService : ITrayService, IDisposable
     {
         private readonly ILogger<TrayService> _logger;
+        private readonly IServiceProvider _serviceProvider;
         private TaskbarIcon? _taskbarIcon;
         private bool _disposed = false;
 
-        public TrayService(ILogger<TrayService> logger)
+        public TrayService(ILogger<TrayService> logger, IServiceProvider serviceProvider)
         {
             _logger = logger;
+            _serviceProvider = serviceProvider;
         }
 
         public void InitializeTray()
@@ -103,7 +112,7 @@ namespace EdgeMonitor.Services
                     }
                 }
                 
-                _taskbarIcon.ToolTipText = "Edge Monitor - 后台监控中";
+                _taskbarIcon.ToolTipText = "Edge Monitor - 就绪";
                 
                 // 双击托盘图标显示主窗口
                 _taskbarIcon.TrayMouseDoubleClick += (s, e) =>
@@ -173,15 +182,47 @@ namespace EdgeMonitor.Services
             }
         }
 
+        public void UpdateTrayStatus(bool isMonitoring)
+        {
+            if (_taskbarIcon != null)
+            {
+                var statusText = isMonitoring ? "Edge Monitor - 监控中" : "Edge Monitor - 就绪";
+                _taskbarIcon.ToolTipText = statusText;
+                _logger.LogInformation($"托盘状态已更新: {statusText}");
+            }
+        }
+
         private void ShowMainWindow()
         {
-            var mainWindow = Application.Current?.MainWindow;
-            if (mainWindow != null)
+            try
             {
-                mainWindow.Show();
-                mainWindow.WindowState = WindowState.Normal;
-                mainWindow.Activate();
-                _logger.LogInformation("主窗口已从托盘恢复");
+                var mainWindow = Application.Current?.MainWindow;
+                
+                // 如果主窗口不存在，创建一个新的
+                if (mainWindow == null && Application.Current != null)
+                {
+                    _logger.LogInformation("主窗口不存在，正在创建新的主窗口");
+                    mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
+                    Application.Current.MainWindow = mainWindow;
+                }
+                
+                if (mainWindow != null)
+                {
+                    mainWindow.Show();
+                    mainWindow.WindowState = WindowState.Normal;
+                    mainWindow.Activate();
+                    mainWindow.Topmost = true;  // 确保窗口置顶
+                    mainWindow.Topmost = false; // 然后取消置顶，让它正常显示
+                    _logger.LogInformation("主窗口已从托盘恢复");
+                }
+                else
+                {
+                    _logger.LogError("无法创建或获取主窗口");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "显示主窗口时发生错误");
             }
         }
 
