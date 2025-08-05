@@ -25,8 +25,9 @@ namespace EdgeMonitor
                 // 启动服务
                 await _host.StartAsync();
 
-                // 检查是否是托盘监测模式
+                // Check startup modes
                 bool isTrayMonitorMode = e.Args.Contains("--tray-monitor");
+                bool isStartupHideToTray = e.Args.Contains("--startup-hide-tray");
 
                 // 检查管理员权限
                 var privilegeService = _host.Services.GetRequiredService<IPrivilegeService>();
@@ -52,24 +53,38 @@ namespace EdgeMonitor
 
                 if (isTrayMonitorMode)
                 {
-                    // 托盘监测模式不显示主窗口自动开始监测
+                    // Tray monitor mode - hide window and auto start monitoring
                     var mainViewModel = _host.Services.GetRequiredService<MainViewModel>();
                     
-                    // 确保托盘显示
+                    // Show tray icon
                     trayService.ShowTray();
                     
-                    // 启动托盘监测模式
+                    // Start tray monitoring mode
                     mainViewModel.StartTrayMonitoring();
                     
-                    // 在托盘模式下，并不设置MainWindow
+                    // Don't set MainWindow in tray mode
+                }
+                else if (isStartupHideToTray)
+                {
+                    // Startup hide to tray mode - create window but hide it
+                    var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+                    
+                    // Set as main window but don't show
+                    MainWindow = mainWindow;
+                    
+                    // Show tray icon
+                    trayService.ShowTray();
+                    
+                    // Hide to tray without showing window
+                    mainWindow.Hide();
                 }
                 else
                 {
-                    // 正常模式显示主窗口
+                    // Normal mode - show main window
                     var mainWindow = _host.Services.GetRequiredService<MainWindow>();
                     mainWindow.Show();
                     
-                    // 设置为应用程序的主窗口
+                    // Set as main window
                     MainWindow = mainWindow;
                 }
 

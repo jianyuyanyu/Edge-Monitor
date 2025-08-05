@@ -154,7 +154,17 @@
                                              IsChecked="{Binding IsStartupEnabled}"
                                              Margin="0,5"/>
                                     <TextBlock Text="启用后将在系统启动时自动运行 Edge Monitor" 
-                                              Margin="20,0,0,10" 
+                                              Margin="20,0,0,5" 
+                                              FontSize="10" 
+                                              Foreground="Gray" 
+                                              TextWrapping="Wrap"/>
+                                    
+                                    <CheckBox Content="启动时隐藏到系统托盘" 
+                                             IsChecked="{Binding IsStartupHideToTray}"
+                                             IsEnabled="{Binding IsStartupEnabled}"
+                                             Margin="20,5"/>
+                                    <TextBlock Text="启用后开机自启动时将直接隐藏到托盘，不显示主窗口" 
+                                              Margin="40,0,0,10" 
                                               FontSize="10" 
                                               Foreground="Gray" 
                                               TextWrapping="Wrap"/>

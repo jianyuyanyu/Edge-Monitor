@@ -98,7 +98,7 @@ namespace EdgeMonitor.Services
             }
         }
 
-        public async Task<bool> EnableStartupAsync(bool runAsAdmin = false)
+        public async Task<bool> EnableStartupAsync(bool runAsAdmin = false, bool hideToTray = false)
         {
             try
             {
@@ -107,11 +107,11 @@ namespace EdgeMonitor.Services
 
                 if (runAsAdmin)
                 {
-                    return CreateScheduledTask();
+                    return CreateScheduledTask(hideToTray);
                 }
                 else
                 {
-                    return CreateRegistryStartup();
+                    return CreateRegistryStartup(hideToTray);
                 }
             }
             catch (Exception ex)
@@ -196,45 +196,46 @@ namespace EdgeMonitor.Services
             return System.Threading.Tasks.Task.FromResult(success);
         }
 
-        private bool CreateRegistryStartup()
+        private bool CreateRegistryStartup(bool hideToTray = false)
         {
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(REGISTRY_KEY, true);
                 if (key != null)
                 {
-                    key.SetValue(APP_NAME, $"\"{ExecutablePath}\"");
-                    _logger.LogInformation($"已设置注册表启动项: {ExecutablePath}");
+                    var arguments = hideToTray ? " --startup-hide-tray" : "";
+                    key.SetValue(APP_NAME, $"\"{ExecutablePath}\"{arguments}");
+                    _logger.LogInformation($"Registry startup entry created: {ExecutablePath}{arguments}");
                     return true;
                 }
                 else
                 {
-                    _logger.LogError("无法打开注册表启动项键");
+                    _logger.LogError("Unable to open registry startup key");
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "创建注册表启动项时发生错误");
+                _logger.LogError(ex, "Failed to create registry startup entry");
                 return false;
             }
         }
 
-        private bool CreateScheduledTask()
+        private bool CreateScheduledTask(bool hideToTray = false)
         {
             try
             {
                 if (string.IsNullOrEmpty(ExecutablePath))
                 {
-                    _logger.LogError("无法获取应用程序可执行文件路径");
+                    _logger.LogError("Unable to get application executable path");
                     return false;
                 }
 
                 using var taskDefinition = TaskService.Instance.NewTask();
                 
-                taskDefinition.RegistrationInfo.Description = "Edge Monitor 自动启动";
+                taskDefinition.RegistrationInfo.Description = "Edge Monitor Auto Startup";
                 
-                // 用户登录时触发
+                // Trigger on user logon
                 var logonTrigger = new LogonTrigger 
                 { 
                     UserId = WindowsIdentity.GetCurrent().Name, 
@@ -242,29 +243,30 @@ namespace EdgeMonitor.Services
                 };
                 taskDefinition.Triggers.Add(logonTrigger);
                 
-                // 执行操作
-                taskDefinition.Actions.Add(ExecutablePath);
+                // Execute action
+                var arguments = hideToTray ? "--startup-hide-tray" : "";
+                taskDefinition.Actions.Add(ExecutablePath, arguments);
 
-                // 设置为最高权限运行（管理员权限）
+                // Run with highest privileges (admin rights)
                 taskDefinition.Principal.RunLevel = TaskRunLevel.Highest;
                 taskDefinition.Principal.LogonType = TaskLogonType.InteractiveToken;
 
-                // 设置其他选项
+                // Set other options
                 taskDefinition.Settings.StopIfGoingOnBatteries = false;
                 taskDefinition.Settings.DisallowStartIfOnBatteries = false;
                 taskDefinition.Settings.ExecutionTimeLimit = TimeSpan.Zero;
                 taskDefinition.Settings.AllowDemandStart = true;
                 taskDefinition.Settings.StartWhenAvailable = true;
 
-                // 注册任务
+                // Register task
                 TaskService.Instance.RootFolder.RegisterTaskDefinition(TASK_NAME, taskDefinition);
                 
-                _logger.LogInformation($"已创建任务计划程序启动项: {ExecutablePath}");
+                _logger.LogInformation($"Scheduled task startup entry created: {ExecutablePath} {arguments}");
                 return true;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "创建任务计划程序启动项时发生错误");
+                _logger.LogError(ex, "Failed to create scheduled task startup entry");
                 return false;
             }
         }
