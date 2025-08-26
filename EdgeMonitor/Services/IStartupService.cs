@@ -21,8 +21,9 @@ namespace EdgeMonitor.Services
         /// 启用开机自启动
         /// </summary>
         /// <param name="runAsAdmin">是否以管理员权限启动</param>
+        /// <param name="hideToTray">是否启动时隐藏到托盘</param>
         /// <returns>如果成功启用则返回true</returns>
-        Task<bool> EnableStartupAsync(bool runAsAdmin = false);
+        Task<bool> EnableStartupAsync(bool runAsAdmin = false, bool hideToTray = false);
 
         /// <summary>
         /// 启用开机后自动在托盘监测

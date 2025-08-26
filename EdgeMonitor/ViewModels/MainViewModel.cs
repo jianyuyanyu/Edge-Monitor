@@ -31,6 +31,7 @@ namespace EdgeMonitor.ViewModels
         private CloseAction _closeAction = CloseAction.Ask;
         private bool _isStartupEnabled = false;
         private bool _isTrayMonitorStartupEnabled = false;
+        private bool _isStartupHideToTray = false;
         
         public MainViewModel(
             ILogger<MainViewModel> logger,
@@ -62,6 +63,7 @@ namespace EdgeMonitor.ViewModels
             UpdateWindowTitle();
             LoadCloseActionSettings();
             LoadStartupSettings();
+            LoadStartupHideToTraySettings();
             
             // 启动时清理过期日志文件
             _ = Task.Run(async () => await _logService.CleanupOldLogFilesAsync());
@@ -184,6 +186,25 @@ namespace EdgeMonitor.ViewModels
                     }
                     // 异步调用托盘监测启动服务
                     _ = Task.Run(async () => await UpdateTrayMonitorStartupStatusAsync(value));
+                }
+            }
+        }
+
+        public bool IsStartupHideToTray
+        {
+            get => _isStartupHideToTray;
+            set 
+            {
+                if (SetProperty(ref _isStartupHideToTray, value))
+                {
+                    // Save setting when changed
+                    _ = Task.Run(async () => await SaveStartupHideToTraySettingsAsync(value));
+                    
+                    // If startup is enabled, recreate startup entry with new setting
+                    if (IsStartupEnabled)
+                    {
+                        _ = Task.Run(async () => await UpdateStartupStatusAsync(true));
+                    }
                 }
             }
         }
@@ -732,26 +753,26 @@ namespace EdgeMonitor.ViewModels
                 bool success;
                 if (enable)
                 {
-                    // 启用开机自启动（以管理员权限）
-                    success = await _startupService.EnableStartupAsync(true);
+                    // Enable startup with admin privileges and tray hide option
+                    success = await _startupService.EnableStartupAsync(true, IsStartupHideToTray);
                     if (success)
                     {
                         System.Windows.Application.Current.Dispatcher.Invoke(() =>
                         {
                             StatusMessage = "已启用开机自启动";
                         });
-                        _logger.LogInformation("开机自启动已启用（管理员权限）");
+                        _logger.LogInformation("Startup enabled with admin privileges");
                     }
                     else
                     {
                         System.Windows.Application.Current.Dispatcher.Invoke(() =>
                         {
                             StatusMessage = "启用开机自启动失败";
-                            // 如果启用失败，需要重置UI状态
+                            // Reset UI state if enable failed
                             _isStartupEnabled = false;
                             OnPropertyChanged(nameof(IsStartupEnabled));
                         });
-                        _logger.LogError("启用开机自启动失败");
+                        _logger.LogError("Failed to enable startup");
                     }
                 }
                 else
@@ -857,6 +878,39 @@ namespace EdgeMonitor.ViewModels
                     // 发生异常时，重置为原来的状态
                     _isTrayMonitorStartupEnabled = !enable;
                     OnPropertyChanged(nameof(IsTrayMonitorStartupEnabled));
+                });
+            }
+        }
+
+        private void LoadStartupHideToTraySettings()
+        {
+            try
+            {
+                IsStartupHideToTray = _configService.GetValue<bool>("UI:StartupHideToTray");
+                _logger.LogInformation($"Load startup hide to tray setting: {IsStartupHideToTray}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load startup hide to tray setting");
+                IsStartupHideToTray = false;
+            }
+        }
+
+        private async Task SaveStartupHideToTraySettingsAsync(bool hide)
+        {
+            try
+            {
+                _logger.LogInformation($"Save startup hide to tray setting: {hide}");
+                _configService.SetValue("UI:StartupHideToTray", hide);
+                await _configService.SaveAsync();
+                _logger.LogInformation($"Startup hide to tray setting saved: {hide}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to save startup hide to tray setting");
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    StatusMessage = $"保存开机自启动隐藏到托盘状态失败: {ex.Message}";
                 });
             }
         }
